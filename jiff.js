@@ -22,6 +22,17 @@ exports.PatchNotInvertibleError = require('./lib/PatchNotInvertibleError');
 
 var isValidObject = patch.isValidObject;
 var defaultHash = patch.defaultHash;
+function defaultObjectVisitor(x/*, path*/) {
+	if ((x instanceof Date) ||
+	    (x instanceof Buffer)) {
+		return false; //No, hash must be used for comparison and raw value for dump
+	} else {
+		return true; // Yes this element is visited as such
+	}
+}
+exports.isValidObject = patch.isValidObject;
+exports.defaultHash = patch.defaultHash;
+exports.defaultObjectVisitor = defaultObjectVisitor;
 
 /**
  * Compute a JSON Patch representing the differences between a and b.
@@ -51,14 +62,16 @@ function initState(options, patch) {
 			patch: patch,
 			hash: orElse(isFunction, options.hash, defaultHash),
 			makeContext: orElse(isFunction, options.makeContext, defaultContext),
-			invertible: !(options.invertible === false)
+			invertible: !(options.invertible === false),
+			objectVisitor: orElse(isFunction, options.objectVisitor, defaultObjectVisitor)
 		};
 	} else {
 		return {
 			patch: patch,
 			hash: orElse(isFunction, options, defaultHash),
 			makeContext: defaultContext,
-			invertible: true
+			invertible: true,
+			objectVisitor: defaultObjectVisitor
 		};
 	}
 }
@@ -78,7 +91,33 @@ function appendChanges(a, b, path, state) {
 	}
 
 	if(isValidObject(a) && isValidObject(b)) {
-		return appendObjectChanges(a, b, path, state);
+		var _a = a;
+		var _b = b;
+		var bHashedOne = false;
+		if (!state.objectVisitor(a, path)) {
+			_a = state.hash(a);
+			bHashedOne = true;
+		}
+		if (!state.objectVisitor(b, path)) {
+			_b = state.hash(b);
+			bHashedOne = true;
+		}
+
+		if (!bHashedOne) {
+			//Standard behaviour, we didn't change anything
+			return appendObjectChanges(a, b, path, state);
+		}
+		
+		// Same code as appendValueChanges except that comparison is done
+		// with one (or both) hash(es) but original values are used in the patch	
+		if (_a !== _b) {
+			if (state.invertible) {
+				state.patch.push({ op: 'test', path: path, value: a });
+			}
+
+			state.patch.push({ op: 'replace', path: path, value: b });
+		}
+		return state;
 	}
 
 	return appendValueChanges(a, b, path, state);
